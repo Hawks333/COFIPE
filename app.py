@@ -1,338 +1,372 @@
+# streamlit_mapa_de_sonhos_v2.py
+# Mapa de Sonhos - Versão aprimorada (Minimalista & Elegante)
+# Requer: streamlit, pandas, numpy, matplotlib, altair, fpdf
+
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
 import io
-import math
+from datetime import datetime
+from fpdf import FPDF
+import base64
+import json
+import matplotlib.pyplot as plt
+import altair as alt
 
-# --- Configuração Inicial ---
-st.set_page_config(page_title="Mapa de Sonhos - Acompanhamento de Metas", layout="wide")
+# ------- Configuração da página -------
+st.set_page_config(page_title="Mapa de Sonhos — MVP", layout="wide", initial_sidebar_state="expanded")
 
-# --- Funções Auxiliares ---
-def get_current_month_index():
-    """Retorna o índice do mês atual (0 a 11) baseado no estado da sessão."""
-    if 'current_month_index' not in st.session_state:
-        st.session_state.current_month_index = 0
-    return st.session_state.current_month_index
+# ------- CSS minimalista -------
+st.markdown("""
+<style>
+:root {
+  --bg: #f7f7fa;
+  --card: #ffffff;
+  --muted: #6b7280;
+  --accent: #0f766e;
+  --danger: #ef4444;
+}
+[data-testid="stAppViewContainer"] > .main {
+  background-color: var(--bg);
+}
+.header {
+  font-family: 'Inter', sans-serif;
+}
+.card {
+  background: var(--card);
+  padding: 18px;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+}
+.small-muted { color: var(--muted); font-size:13px; }
+.accent { color: var(--accent); font-weight:600; }
+</style>
+""", unsafe_allow_html=True)
 
-def get_month_info(index):
-    """Retorna o objeto datetime e o nome formatado do mês para um dado índice (0-11)."""
-    start_date = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    target_date = start_date + pd.DateOffset(months=index)
-    return target_date, target_date.strftime('%B/%Y').capitalize()
+# ------- Helpers -------
+def currency(x):
+    return f"R$ {x:,.2f}"
 
-def add_goal(name, value):
-    """Adiciona uma nova meta à lista de metas."""
-    st.session_state.goals.append({'name': name, 'value': float(value), 'saved': 0.0})
+def compute_monthly_goal_cost(goals):
+    total = sum([g['value'] for g in goals])
+    return total, (total / 12 if total > 0 else 0.0)
 
-def remove_goal(idx):
-    """Remove uma meta pelo índice."""
-    try:
-        st.session_state.goals.pop(idx)
-    except:
-        pass
+def build_plan_df(income_total, fixed_total, fun_value, monthly_goal_cost):
+    start = datetime.now().replace(day=1)
+    months = [(start + pd.DateOffset(months=i)).strftime('%b %Y') for i in range(12)]
+    rows = []
+    for m in months:
+        saldo = income_total - (fixed_total + fun_value + monthly_goal_cost)
+        rows.append({
+            'Mês': m,
+            'Receita (R$)': income_total,
+            'Despesas Fixas (R$)': fixed_total,
+            'Diversão (R$)': fun_value,
+            'Meta Mensal (R$)': monthly_goal_cost,
+            'Saldo Mensal (R$)': saldo
+        })
+    return pd.DataFrame(rows)
 
-def format_currency(value):
-    """Formata um valor numérico para a moeda brasileira."""
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def df_to_csv_bytes(df):
+    return df.to_csv(index=False).encode('utf-8')
 
-# --- Inicialização do Estado da Sessão ---
+def save_project_to_bytes(state):
+    return json.dumps(state, ensure_ascii=False, indent=2).encode('utf-8')
+
+def create_pdf_summary(project_state: dict, plan_df: pd.DataFrame, filename="resumo_mapa_de_sonhos.pdf"):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, "Mapa de Sonhos - Resumo", ln=True)
+    pdf.ln(4)
+    pdf.set_font("Arial", size=11)
+    pdf.multi_cell(0, 6, f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    pdf.ln(4)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "Metas", ln=True)
+    pdf.set_font("Arial", size=11)
+    if project_state['goals']:
+        for g in project_state['goals']:
+            pdf.cell(0, 6, f"- {g['name']}: R$ {g['value']:,.2f}", ln=True)
+    else:
+        pdf.cell(0, 6, "Nenhuma meta cadastrada.", ln=True)
+    pdf.ln(6)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "Resumo Financeiro Mensal (média)", ln=True)
+    pdf.set_font("Arial", size=11)
+    pdf.cell(0, 6, f"Receita total mensal: R$ {project_state['income_total']:,.2f}", ln=True)
+    pdf.cell(0, 6, f"Despesas fixas mensais: R$ {project_state['fixed_total']:,.2f}", ln=True)
+    pdf.cell(0, 6, f"Diversão mensal: R$ {project_state['fun_value']:,.2f}", ln=True)
+    pdf.cell(0, 6, f"Meta mensal total: R$ {project_state['monthly_goal_cost']:,.2f}", ln=True)
+    pdf.cell(0, 6, f"Saldo mensal médio: R$ {project_state['monthly_balance']:,.2f}", ln=True)
+    pdf.ln(8)
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 6, "Observação: este PDF é um resumo gerado automaticamente pelo MVP. Para recomendações personalizadas considere validar dados reais e consultar orientação financeira.")
+    # Return bytes
+    return pdf.output(dest='S').encode('latin-1')
+
+# ------- State init -------
 if 'goals' not in st.session_state:
-    # Adicionando 'saved' para rastrear o progresso
-    st.session_state.goals = [
-        {'name': 'Viagem para Europa', 'value': 10000.0, 'saved': 5000.0},
-        {'name': 'Sofá Novo', 'value': 5000.0, 'saved': 1000.0},
-        {'name': 'Reserva de Emergência', 'value': 15000.0, 'saved': 0.0}
-    ]
-
-# --- Lógica de Migração (Corrige KeyError: 'saved') ---
-# Garante que todas as metas, incluindo as adicionadas pelo código original do usuário,
-# tenham a chave 'saved' inicializada.
-for goal in st.session_state.goals:
-    if 'saved' not in goal:
-        goal['saved'] = 0.0
-if 'fixed_expenses_list' not in st.session_state:
-    st.session_state.fixed_expenses_list = [
-        'Internet', 'Luz', 'Conta de celular', 'Faculdade', 'Academia', 'Gasolina', 'Água', 'Aluguel', 'Parcela do carro', 'Corte de cabelo', 'Unha'
-    ]
-if 'paid' not in st.session_state:
-    # paid structure: {month_index: {expense_name: bool}}
-    st.session_state.paid = {m: {e: False for e in st.session_state.fixed_expenses_list} for m in range(12)}
+    st.session_state.goals = []
+if 'fixed_expenses' not in st.session_state:
+    st.session_state.fixed_expenses = {
+        'Internet': 100.0, 'Luz': 150.0, 'Conta de celular': 80.0, 'Faculdade': 0.0,
+        'Academia': 120.0, 'Gasolina': 300.0, 'Água': 60.0, 'Aluguel': 1200.0,
+        'Parcela do carro': 0.0, 'Corte de cabelo': 60.0, 'Unha': 50.0
+    }
 if 'salary' not in st.session_state:
     st.session_state.salary = 5000.0
 if 'extra' not in st.session_state:
     st.session_state.extra = 1200.0
 if 'fun_value' not in st.session_state:
     st.session_state.fun_value = 300.0
-# Inicializa os valores das despesas fixas (mantendo a estrutura original para compatibilidade)
-for exp in st.session_state.fixed_expenses_list:
-    keyname = f'val_{exp}'
-    if keyname not in st.session_state:
-        st.session_state[keyname] = 100.0
 
-# --- Lógica de Cálculo Central ---
-def calculate_financials():
-    """Calcula o total de metas, custo mensal e balanço financeiro."""
-    total_goals = sum(g['value'] for g in st.session_state.goals)
-    
-    # Soma dos valores das despesas fixas
-    fixed_values = {exp: st.session_state.get(f'val_{exp}', 0.0) for exp in st.session_state.fixed_expenses_list}
-    fixed_total = sum(fixed_values.values())
-    
-    income_total = st.session_state.salary + st.session_state.extra
-    
-    # Custo mensal para atingir todas as metas em 12 meses
-    monthly_goal_cost = total_goals / 12 if total_goals > 0 else 0
-    
-    # Saldo mensal médio (o quanto sobra após despesas e meta de poupança)
-    monthly_balance = income_total - (fixed_total + st.session_state.fun_value + monthly_goal_cost)
-    
-    return {
-        'total_goals': total_goals,
-        'fixed_values': fixed_values,
-        'fixed_total': fixed_total,
+# ------- Layout -------
+st.markdown('<div class="header"><h1 style="margin:0">Mapa de Sonhos</h1><div class="small-muted">Planeje suas metas para 12 meses — versão MVP aprimorada</div></div>', unsafe_allow_html=True)
+st.write('')
+
+# Sidebar: project management
+with st.sidebar:
+    st.markdown("### Projeto")
+    if st.button("Novo projeto (limpar)"):
+        st.session_state.goals = []
+        st.session_state.salary = 5000.0
+        st.session_state.extra = 1200.0
+        st.session_state.fixed_expenses = st.session_state.fixed_expenses  # keep template
+        st.session_state.fun_value = 300.0
+        st.success("Projeto resetado (dados em sessão limpos).")
+
+    uploaded_json = st.file_uploader("Carregar projeto (JSON)", type=['json'])
+    if uploaded_json is not None:
+        try:
+            data = json.load(uploaded_json)
+            st.session_state.goals = data.get('goals', [])
+            st.session_state.salary = data.get('salary', st.session_state.salary)
+            st.session_state.extra = data.get('extra', st.session_state.extra)
+            st.session_state.fixed_expenses = data.get('fixed_expenses', st.session_state.fixed_expenses)
+            st.session_state.fun_value = data.get('fun_value', st.session_state.fun_value)
+            st.success("Projeto carregado.")
+        except Exception as e:
+            st.error("Erro ao carregar projeto: " + str(e))
+
+    if st.button("Salvar projeto (download JSON)"):
+        proj = {
+            'goals': st.session_state.goals,
+            'salary': st.session_state.salary,
+            'extra': st.session_state.extra,
+            'fixed_expenses': st.session_state.fixed_expenses,
+            'fun_value': st.session_state.fun_value
+        }
+        b = save_project_to_bytes(proj)
+        st.download_button("Download JSON do projeto", data=b, file_name="mapa_de_sonhos_projeto.json", mime="application/json")
+
+    st.markdown("---")
+    st.markdown("### Exportar")
+    # placeholder for exports filled later (main area triggers)
+    st.info("Use os botões na área principal para exportar CSV / PDF do plano.")
+    st.markdown("---")
+    st.markdown("Versão MVP aprimorada — Minimalista • 2025")
+
+# ------- Main: input forms -------
+col1, col2 = st.columns([2, 3])
+
+with col1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("1 — Metas (12 meses)")
+    with st.form("form_goal"):
+        g_name = st.text_input("Nome da meta", placeholder="Ex: Carro, Viagem, Reserva de emergência")
+        g_value = st.number_input("Valor total da meta (R$)", min_value=0.0, value=1000.0, step=100.0, format="%.2f")
+        add = st.form_submit_button("Adicionar / Atualizar meta")
+        if add:
+            if not g_name.strip():
+                st.error("Digite um nome válido para a meta.")
+            else:
+                # if exists by name, update
+                found = False
+                for g in st.session_state.goals:
+                    if g['name'].lower() == g_name.strip().lower():
+                        g['value'] = float(g_value)
+                        found = True
+                        break
+                if not found:
+                    st.session_state.goals.append({'name': g_name.strip(), 'value': float(g_value)})
+                st.success("Meta adicionada/atualizada.")
+    # list and remove
+    if st.session_state.goals:
+        goals_df = pd.DataFrame(st.session_state.goals)
+        goals_df.index = range(1, len(goals_df)+1)
+        st.table(goals_df.rename(columns={'name':'Meta','value':'Valor (R$)'}))
+        idx_remove = st.number_input("Remover meta (índice, 0 = nenhum)", min_value=0, max_value=len(st.session_state.goals), value=0, step=1)
+        if st.button("Remover índice"):
+            if idx_remove > 0:
+                try:
+                    removed = st.session_state.goals.pop(int(idx_remove)-1)
+                    st.success(f"Removida meta: {removed['name']}")
+                except Exception as e:
+                    st.error("Erro ao remover: " + str(e))
+    else:
+        st.write("_Nenhuma meta adicionada ainda._")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("2 — Receitas & Despesas")
+    with st.form("form_income"):
+        st.session_state.salary = st.number_input("Salário fixo (R$)", min_value=0.0, value=float(st.session_state.salary), step=100.0, format="%.2f")
+        st.session_state.extra = st.number_input("Renda extra média mensal (R$)", min_value=0.0, value=float(st.session_state.extra), step=100.0, format="%.2f")
+        st.markdown("**Contas fixas (edite os valores)**")
+        fe = st.session_state.fixed_expenses.copy()
+        # Editable table via inputs
+        for k in list(fe.keys()):
+            fe[k] = st.number_input(f"R$ - {k}", min_value=0.0, value=float(fe[k]), step=10.0, format="%.2f", key=f"fe_{k}")
+        st.session_state.fixed_expenses = fe
+        st.session_state.fun_value = st.number_input("Conta de diversão mensal (R$)", min_value=0.0, value=float(st.session_state.fun_value), step=10.0, format="%.2f")
+        save_income = st.form_submit_button("Salvar receitas e despesas")
+        if save_income:
+            st.success("Receitas e despesas atualizadas.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ------- Calculations -------
+total_goals, monthly_goal_cost = compute_monthly_goal_cost(st.session_state.goals)
+income_total = float(st.session_state.salary) + float(st.session_state.extra)
+fixed_total = sum([v for v in st.session_state.fixed_expenses.values()])
+fun_value = float(st.session_state.fun_value)
+monthly_balance = income_total - (fixed_total + fun_value + monthly_goal_cost)
+plan_df = build_plan_df(income_total, fixed_total, fun_value, monthly_goal_cost)
+
+# ------- KPIs -------
+k1, k2, k3, k4 = st.columns([1.5,1.2,1.2,1.2])
+k1.metric("Total metas (R$)", currency(total_goals))
+k2.metric("Meta mensal (R$)", currency(monthly_goal_cost))
+k3.metric("Receita mensal (R$)", currency(income_total))
+k4.metric("Saldo médio (R$)", currency(monthly_balance if monthly_balance is not None else 0.0))
+
+# ------- Feedback and action when negative -------
+st.write("")
+if monthly_balance < 0:
+    deficit = abs(monthly_balance)
+    st.error(f"Saldo médio negativo — déficit mensal: {currency(deficit)}")
+    st.warning("Para atingir suas metas, será preciso criar um planejamento alternativo.")
+    opt = st.selectbox("Como deseja prosseguir?", [
+        "Trabalho CLT e gostaria de ser promovido",
+        "Quero empreender",
+        "Empreendo mas estou com dificuldades",
+        "Quero reduzir o valor da meta"
+    ])
+    if st.button("Receber material de orientação (eBook)"):
+        texts = {
+            "Trabalho CLT e gostaria de ser promovido": "Guia rápido: ações para visibilidade, feedback e resultados mensuráveis para pedir promoção.",
+            "Quero empreender": "Guia rápido: validar ideia, testar MVP, controlar fluxo de caixa e primeiros passos.",
+            "Empreendo mas estou com dificuldades": "Guia rápido: funil, redução de custos fixos, foco em clientes recorrentes.",
+            "Quero reduzir o valor da meta": "Guia rápido: priorizar metas, renegociar prazos, parcelar estrategicamente."
+        }
+        pdf_bytes = create_pdf_summary({
+            'goals': st.session_state.goals,
+            'income_total': income_total,
+            'fixed_total': fixed_total,
+            'fun_value': fun_value,
+            'monthly_goal_cost': monthly_goal_cost,
+            'monthly_balance': monthly_balance
+        }, plan_df)
+        st.download_button("Baixar eBook (PDF)", data=pdf_bytes, file_name="orientacao_mapa_de_sonhos.pdf", mime="application/pdf")
+
+# ------- Visualizações -------
+st.markdown("---")
+colA, colB = st.columns([2,1])
+
+with colA:
+    st.subheader("Planejamento 12 meses — Tabela & Gráfico")
+    st.dataframe(plan_df, height=280)
+    # Line chart (saldo mensal)
+    line = alt.Chart(plan_df.reset_index()).mark_line(point=True).encode(
+        x='Mês',
+        y=alt.Y('Saldo Mensal (R$)', title='Saldo (R$)'),
+        tooltip=['Mês','Saldo Mensal (R$)']
+    ).properties(width=800, height=250)
+    st.altair_chart(line, use_container_width=True)
+
+with colB:
+    st.subheader("Composição mensal")
+    # Pie: fixed / fun / goals
+    comp = pd.DataFrame({
+        'categoria': ['Despesas fixas','Diversão','Meta mensal'],
+        'valor': [fixed_total, fun_value, monthly_goal_cost]
+    })
+    fig1, ax1 = plt.subplots(figsize=(4,4))
+    ax1.pie(comp['valor'], labels=comp['categoria'], autopct=lambda pct: f"{pct:.0f}%\n({currency(pct/100*comp['valor'].sum()):s})", startangle=90, wedgeprops={'linewidth': 0.5, 'edgecolor': 'white'})
+    ax1.axis('equal')
+    st.pyplot(fig1)
+
+st.markdown("---")
+
+# ------- Progresso por meta -------
+st.subheader("Progresso por meta (simulação)")
+if st.session_state.goals:
+    gcols = st.columns(1)
+    funded_per_month = max(0.0, (income_total - (fixed_total + fun_value)))  # quanto sobra para metas
+    if monthly_goal_cost > 0:
+        for g in st.session_state.goals:
+            percent = min(1.0, funded_per_month / monthly_goal_cost * (g['value'] / total_goals)) if total_goals>0 else 0
+            pct_display = int(percent*100)
+            st.markdown(f"**{g['name']}** — {currency(g['value'])}")
+            st.progress(pct_display/100.0)
+            st.caption(f"{pct_display}% estimado coberto por mês com base no fluxo atual (simulação).")
+else:
+    st.info("Adicione metas para visualizar o progresso individual.")
+
+# ------- Acompanhamento mensal simplificado -------
+st.markdown("---")
+st.subheader("Atualização mensal (rápida)")
+mcol1, mcol2, mcol3 = st.columns([1.2,1,1])
+sel_month = st.selectbox("Mês", plan_df['Mês'].tolist())
+with st.form("monthly_update"):
+    received = st.number_input("Quanto recebeu este mês (R$)", min_value=0.0, value=float(income_total), step=50.0, format="%.2f")
+    real_fixed = st.number_input("Gastou em contas fixas (R$)", min_value=0.0, value=float(fixed_total), step=50.0, format="%.2f")
+    real_fun = st.number_input("Gastou em diversão (R$)", min_value=0.0, value=float(fun_value), step=10.0, format="%.2f")
+    upd = st.form_submit_button("Atualizar e calcular indicador")
+    if upd:
+        real_balance = received - (real_fixed + real_fun + monthly_goal_cost)
+        st.metric(f"Saldo real — {sel_month}", currency(real_balance))
+        # progress toward monthly goals funding
+        if monthly_goal_cost > 0:
+            funded = max(0.0, (received - (real_fixed + real_fun)) / monthly_goal_cost)
+            pct = min(1.0, funded)
+            st.progress(pct)
+            if pct >= 1.0:
+                st.success("Você está financiando a meta mensal!")
+            elif pct >= 0.6:
+                st.warning("Quase lá — pequeno ajuste e você alcança.")
+            else:
+                st.error("Faltam recursos; reveja despesas ou metas.")
+
+# ------- Export buttons -------
+st.markdown("---")
+st.subheader("Exportar plano e relatórios")
+export_col1, export_col2, export_col3 = st.columns([1,1,1])
+with export_col1:
+    csv_bytes = df_to_csv_bytes(plan_df)
+    st.download_button("Baixar CSV do plano", data=csv_bytes, file_name="mapa_de_sonhos_plano.csv", mime="text/csv")
+with export_col2:
+    # JSON project
+    project = {
+        'goals': st.session_state.goals,
+        'salary': st.session_state.salary,
+        'extra': st.session_state.extra,
+        'fixed_expenses': st.session_state.fixed_expenses,
+        'fun_value': st.session_state.fun_value,
+        'generated_at': datetime.now().isoformat()
+    }
+    st.download_button("Baixar projeto (JSON)", data=json.dumps(project, ensure_ascii=False, indent=2).encode('utf-8'), file_name="mapa_de_sonhos_projeto.json", mime="application/json")
+with export_col3:
+    pdf_bytes = create_pdf_summary({
+        'goals': st.session_state.goals,
         'income_total': income_total,
+        'fixed_total': fixed_total,
+        'fun_value': fun_value,
         'monthly_goal_cost': monthly_goal_cost,
         'monthly_balance': monthly_balance
-    }
+    }, plan_df)
+    st.download_button("Baixar resumo (PDF)", data=pdf_bytes, file_name="resumo_mapa_de_sonhos.pdf", mime="application/pdf")
 
-financials = calculate_financials()
-
-# --- Layout Principal ---
-st.title("💰 Mapa de Sonhos - Acompanhamento de Metas")
-st.write("Planeje suas metas, acompanhe receitas, despesas e o progresso das suas conquistas.")
-
-# --- Painel de Metas Atingidas (Novo Requisito) ---
-st.header("✨ Metas Concluídas")
-completed_goals = [g for g in st.session_state.goals if g['saved'] >= g['value']]
-
-if completed_goals:
-    for goal in completed_goals:
-        st.success(f"**Parabéns!** Você já atingiu 100% da meta **{goal['name']}** ({format_currency(goal['value'])}). Que tal realizar este sonho?")
-    st.balloons()
-else:
-    st.info("Nenhuma meta concluída ainda. Continue economizando!")
-
-st.write("---")
-
-# --- Colunas de Configuração ---
-col_config, col_goals = st.columns([1, 1])
-
-with col_config:
-    st.header("1) Receitas e Despesas Fixas")
-    with st.expander("Configurar Receitas e Despesas", expanded=False):
-        with st.form(key='income_form'):
-            st.subheader('Receitas mensais')
-            salary = st.number_input('Salário fixo (R$)', min_value=0.0, value=st.session_state.salary, step=100.0, format="%.2f")
-            extra = st.number_input('Renda extra média mensal (R$)', min_value=0.0, value=st.session_state.extra, step=100.0, format="%.2f")
-            
-            st.subheader('Contas fixas (previsíveis)')
-            fixed_items = st.session_state.fixed_expenses_list.copy()
-            edited = st.text_area('Lista de contas fixas (um por linha) — edite se necessário', '\n'.join(fixed_items), height=120)
-            
-            if st.form_submit_button('Salvar Receita & Lista de Contas'):
-                new_list = [x.strip() for x in edited.split('\n') if x.strip()]
-                if not new_list:
-                    st.error("A lista de contas fixas não pode ficar vazia.")
-                else:
-                    # Atualiza a lista de despesas fixas
-                    st.session_state.fixed_expenses_list = new_list
-                    # Atualiza a estrutura 'paid' para incluir novos itens nos 12 meses
-                    for m in range(12):
-                        for e in new_list:
-                            if e not in st.session_state.paid[m]:
-                                st.session_state.paid[m][e] = False
-                    st.session_state.salary = salary
-                    st.session_state.extra = extra
-                    st.success('Receita e lista de contas fixas atualizadas com sucesso!')
-                    st.experimental_rerun() # Força o recálculo e re-renderização
-
-        st.write('---')
-        st.subheader('Defina o valor mensal de cada conta fixa')
-        for exp in st.session_state.fixed_expenses_list:
-            keyname = f'val_{exp}'
-            default_val = st.session_state.get(keyname, 100.0)
-            st.session_state[keyname] = st.number_input(f'R$ - {exp}', min_value=0.0, value=default_val, step=50.0, format="%.2f", key=keyname)
-
-        st.write('---')
-        st.subheader('Outras Despesas')
-        st.session_state.fun_value = st.number_input('Conta de diversão mensal (R$)', min_value=0.0, value=st.session_state.fun_value, step=50.0, format="%.2f", key='fun_value')
-
-with col_goals:
-    st.header("2) Defina suas Metas (Sonhos)")
-    with st.expander("Adicionar/Remover Metas", expanded=True):
-        with st.form(key='goal_form'):
-            name = st.text_input('Nome da meta (ex: Carro, Viagem, Reserva de emergência)')
-            value = st.number_input('Valor total da meta (R$)', min_value=0.0, value=1000.0, step=100.0, format="%.2f")
-            submitted = st.form_submit_button('Adicionar meta')
-            if submitted and name.strip():
-                add_goal(name.strip(), value)
-                st.experimental_rerun()
-
-        if st.session_state.goals:
-            df_goals = pd.DataFrame(st.session_state.goals)
-            df_goals['Valor (R$)'] = df_goals['value'].apply(format_currency)
-            df_goals['Guardado (R$)'] = df_goals['saved'].apply(format_currency)
-            df_goals['Progresso (%)'] = (df_goals['saved'] / df_goals['value'] * 100).clip(upper=100).round(1)
-            df_goals.index = df_goals.index + 1
-            
-            st.write("### Metas adicionadas")
-            st.dataframe(df_goals[['name', 'Valor (R$)', 'Guardado (R$)', 'Progresso (%)']].rename(columns={'name':'Meta'}), use_container_width=True)
-            
-            # Interface de remoção
-            to_remove = st.number_input('Remover meta (digite o índice, 0 = nenhum)', min_value=0, max_value=len(st.session_state.goals), value=0)
-            if to_remove != 0:
-                remove_goal(int(to_remove)-1)
-                st.experimental_rerun()
-
-    st.write("---")
-    st.subheader("Resumo Financeiro")
-    st.metric('Total de Metas', format_currency(financials['total_goals']))
-    st.metric('Custo Mensal para Metas (12 meses)', format_currency(financials['monthly_goal_cost']))
-    st.metric('Saldo Mensal Estimado', format_currency(financials['monthly_balance']))
-    
-    if financials['monthly_balance'] < 0:
-        st.error('Atenção: Seu planejamento atual está com déficit. Reduza despesas ou aumente a renda.')
-    else:
-        st.success('Ótimo: Suas metas cabem no plano atual!')
-
-st.write("---")
-
-# --- Acompanhamento Mensal (Foco no Mês Atual) ---
-st.header("3) Acompanhamento Mensal")
-
-# Navegação entre meses
-col_prev, col_title, col_next = st.columns([1, 2, 1])
-
-with col_prev:
-    if col_prev.button("⬅️ Mês Anterior", disabled=(get_current_month_index() == 0)):
-        st.session_state.current_month_index -= 1
-        st.experimental_rerun()
-
-with col_title:
-    current_date, current_month_name = get_month_info(get_current_month_index())
-    st.subheader(f"Mês em Foco: {current_month_name}", anchor=False)
-
-with col_next:
-    if col_next.button("Próximo Mês ➡️", disabled=(get_current_month_index() == 11)):
-        st.session_state.current_month_index += 1
-        st.experimental_rerun()
-
-st.write("---")
-
-# Colunas para o acompanhamento do mês
-col_fixed, col_real, col_progress = st.columns([1, 1, 1])
-month_index = get_current_month_index()
-
-with col_fixed:
-    st.subheader("Contas Fixas Pagas")
-    
-    # Usando um formulário para salvar todos os pagamentos de uma vez
-    with st.form(key=f'paid_form_{month_index}'):
-        for exp in st.session_state.fixed_expenses_list:
-            key = f'paid_{month_index}_{exp}'
-            # Garante que o estado 'paid' está sincronizado
-            if exp not in st.session_state.paid[month_index]:
-                st.session_state.paid[month_index][exp] = False
-            
-            default_val = financials['fixed_values'].get(exp, 0.0)
-            val = st.checkbox(f"{exp} - {format_currency(default_val)}", 
-                              value=st.session_state.paid[month_index].get(exp, False), 
-                              key=key)
-            st.session_state.paid[month_index][exp] = val
-        
-        if st.form_submit_button('Salvar Pagamentos'):
-            st.success(f'Pagamentos salvos para {current_month_name}!')
-            st.experimental_rerun()
-
-with col_real:
-    st.subheader("Entradas e Saídas Reais")
-    
-    # Campos para entrada de dados reais do mês
-    received_key = f'received_{month_index}'
-    real_fixed_key = f'real_fixed_{month_index}'
-    real_fun_key = f'real_fun_{month_index}'
-    
-    # Inicializa valores reais com os valores planejados como sugestão
-    if received_key not in st.session_state:
-        st.session_state[received_key] = financials['income_total']
-    if real_fixed_key not in st.session_state:
-        st.session_state[real_fixed_key] = financials['fixed_total']
-    if real_fun_key not in st.session_state:
-        st.session_state[real_fun_key] = st.session_state.fun_value
-
-    received = st.number_input('Recebido Real (R$)', min_value=0.0, value=st.session_state[received_key], step=100.0, format="%.2f", key=received_key)
-    real_fixed_spent = st.number_input('Contas Fixas Reais (R$)', min_value=0.0, value=st.session_state[real_fixed_key], step=50.0, format="%.2f", key=real_fixed_key)
-    real_fun = st.number_input('Diversão Real (R$)', min_value=0.0, value=st.session_state[real_fun_key], step=50.0, format="%.2f", key=real_fun_key)
-    
-    # Cálculo do saldo real e quanto foi guardado
-    real_saved = received - (real_fixed_spent + real_fun)
-    real_balance = real_saved - financials['monthly_goal_cost']
-    
-    st.write("---")
-    st.metric('Saldo Real do Mês', format_currency(real_balance))
-    st.metric('Valor Guardado para Metas', format_currency(real_saved))
-    
-    # Atualiza o progresso das metas (simplificado: distribui o valor guardado igualmente entre as metas)
-    if st.button('Atualizar Progresso das Metas'):
-        if financials['total_goals'] > 0:
-            # Distribui o valor guardado proporcionalmente ao valor de cada meta
-            total_value = financials['total_goals']
-            for goal in st.session_state.goals:
-                # Calcula a proporção da meta em relação ao total
-                proportion = goal['value'] / total_value
-                # Adiciona o valor guardado proporcionalmente
-                goal['saved'] += real_saved * proportion
-                # Garante que o valor guardado não exceda o valor da meta
-                goal['saved'] = min(goal['saved'], goal['value'])
-            st.success("Progresso das metas atualizado!")
-            st.experimental_rerun()
-        else:
-            st.warning("Nenhuma meta definida para atualizar o progresso.")
-
-with col_progress:
-    st.subheader("Progresso das Metas")
-    
-    if st.session_state.goals:
-        for goal in st.session_state.goals:
-            progress_pct = (goal['saved'] / goal['value']) if goal['value'] > 0 else 0
-            progress_pct = min(1.0, progress_pct) # Limita a 100%
-            
-            st.write(f"**{goal['name']}** ({format_currency(goal['saved'])} / {format_currency(goal['value'])})")
-            st.progress(progress_pct)
-            
-            if progress_pct >= 1.0:
-                st.success("Meta Concluída!")
-            elif progress_pct >= 0.75:
-                st.info("Quase lá! Foco final.")
-            elif progress_pct > 0:
-                st.warning("Progresso em andamento.")
-            else:
-                st.error("Ainda não iniciada.")
-
-st.write("---")
-
-# --- Exportar / Download (Mantido) ---
-st.header('4) Exportar Planejamento')
-
-# Recria o DataFrame de planejamento para exportação (agora com 12 meses)
-months_full = [get_month_info(i)[1] for i in range(12)]
-plan_rows = []
-for i, m in enumerate(months_full):
-    plan_rows.append({
-        'Mês': m,
-        'Receita Planejada (R$)': financials['income_total'],
-        'Despesas Fixas Planejadas (R$)': financials['fixed_total'],
-        'Diversão Planejada (R$)': st.session_state.fun_value,
-        'Meta Mensal (R$)': financials['monthly_goal_cost'],
-        'Saldo Mensal Estimado (R$)': financials['monthly_balance']
-    })
-plan_df = pd.DataFrame(plan_rows)
-
-st.dataframe(plan_df.style.format('{:,.2f}', subset=['Receita Planejada (R$)','Despesas Fixas Planejadas (R$)','Diversão Planejada (R$)','Meta Mensal (R$)','Saldo Mensal Estimado (R$)']), height=200, use_container_width=True)
-
-if st.button('Exportar plano para CSV'):
-    csv = plan_df.to_csv(index=False).encode('utf-8')
-    st.download_button('Download CSV do plano', data=csv, file_name='mapa_de_sonhos_plano.csv', mime='text/csv')
-
-st.write('\n---\n')
-st.caption('Desenvolvido por Manus. Este é um MVP (Produto Mínimo Viável) para planejamento financeiro.')
+st.markdown("<div class='small-muted'>Dica: use o botão JSON para salvar seu progresso entre sessões de teste.</div>", unsafe_allow_html=True)
