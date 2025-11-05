@@ -43,6 +43,13 @@ if 'goals' not in st.session_state:
         {'name': 'Sofá Novo', 'value': 5000.0, 'saved': 1000.0},
         {'name': 'Reserva de Emergência', 'value': 15000.0, 'saved': 0.0}
     ]
+
+# --- Lógica de Migração (Corrige KeyError: 'saved') ---
+# Garante que todas as metas, incluindo as adicionadas pelo código original do usuário,
+# tenham a chave 'saved' inicializada.
+for goal in st.session_state.goals:
+    if 'saved' not in goal:
+        goal['saved'] = 0.0
 if 'fixed_expenses_list' not in st.session_state:
     st.session_state.fixed_expenses_list = [
         'Internet', 'Luz', 'Conta de celular', 'Faculdade', 'Academia', 'Gasolina', 'Água', 'Aluguel', 'Parcela do carro', 'Corte de cabelo', 'Unha'
